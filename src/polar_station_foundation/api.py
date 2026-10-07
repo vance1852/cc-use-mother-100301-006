@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 from .errors import DomainError, ValidationError
 from .service import DomainService
 from .storage import Database
+from .waste_service import WasteService
 
 
 def route(service: DomainService, method: str, path: str, body: dict[str, Any] | None,
@@ -48,6 +49,77 @@ def route(service: DomainService, method: str, path: str, body: dict[str, Any] |
             query = parse_qs(parsed.query)
             after = int(query.get("after_sequence", ["0"])[0])
             return 200, {"items": service.audit_events(after)}
+
+        # ------------------------------------------------ 废弃物回运责任项目
+        waste = WasteService(service.database, service.clock)
+        query = parse_qs(parsed.query)
+        # actor_id 只从 X-Actor-Id 头取得，避免与显式关键字重复。
+        body = {key: value for key, value in body.items() if key != "actor_id"}
+
+        def _event_items(items) -> list[dict[str, Any]]:
+            return [item.__dict__ for item in items]
+
+        if method == "POST" and parsed.path == "/waste/regulations":
+            receipt = waste.register_regulation(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/waste/custodians":
+            receipt = waste.register_custodian(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/waste/shipments":
+            receipt = waste.create_shipment(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/waste/items":
+            receipt = waste.generate_waste(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/waste/containers/seal":
+            receipt = waste.seal_container(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/waste/containers/repack":
+            receipt = waste.repack_container(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/waste/handovers":
+            receipt = waste.propose_handover(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/waste/handovers/confirm":
+            receipt = waste.confirm_handover(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/waste/handovers/reject":
+            receipt = waste.reject_handover(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/waste/handovers/cancel":
+            receipt = waste.cancel_handover(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/waste/damage":
+            receipt = waste.record_damage(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/waste/corrections":
+            receipt = waste.correct_quantity(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/waste/disposals":
+            receipt = waste.record_disposal(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+
+        if method == "GET" and parsed.path.startswith("/waste/shipments/") \
+                and parsed.path.endswith("/events"):
+            shipment_id = parsed.path.split("/")[3]
+            return 200, {"items": _event_items(waste.shipment_events(shipment_id))}
+        if method == "GET" and parsed.path.startswith("/waste/shipments/") \
+                and parsed.path.endswith("/dashboard"):
+            shipment_id = parsed.path.split("/")[3]
+            return 200, waste.coordinator_dashboard(shipment_id)
+        if method == "GET" and parsed.path.startswith("/waste/items/") \
+                and parsed.path.endswith("/events"):
+            item_id = parsed.path.split("/")[3]
+            return 200, {"items": _event_items(waste.item_events(item_id))}
+        if method == "GET" and parsed.path.startswith("/waste/containers/"):
+            container_id = parsed.path.split("/")[3]
+            return 200, waste.inspect_container(container_id)
+        if method == "GET" and parsed.path == "/waste/obligations":
+            shipment_id = query.get("shipment_id", [None])[0]
+            return 200, {"items": waste.open_obligations(shipment_id)}
+        if method == "GET" and parsed.path == "/waste/overdue":
+            shipment_id = query.get("shipment_id", [None])[0]
+            return 200, {"items": waste.overdue(shipment_id)}
         return 404, {"error": "route_not_found", "message": "接口不存在"}
     except DomainError as exc:
         return exc.status, {"error": exc.code, "message": str(exc)}
